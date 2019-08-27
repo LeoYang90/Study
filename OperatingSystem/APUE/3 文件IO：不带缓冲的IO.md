@@ -25,7 +25,7 @@
 	  - 调用 `open` 函数不使用 `O_CLOEXEC` 模式打开的文件描述符，然后调用 `fcntl` 函数设置`FD_CLOEXEC` 选项，效果和使用 `O_CLOEXEC` 选项 `open` 函数相同，但分别调用 `open`、`fcnt` 两个函数，不是原子操作，多线程环境中存在竞态条件，故用 `open` 函数 `O_CLOEXEC` 选项代替之。
 	  - 调用 `open` 函数 `O_CLOEXEC` 模式打开的文件描述符，或是使用 `fcntl` 设置 `FD_CLOEXEC` 选项，这二者得到（处理）的描述符在通过 `fork` 调用产生的子进程中均不被关闭。
 	  - 调用 `dup` 族类函数得到的新文件描述符将清除 `O_CLOEXEC` 模式。
-     - `O_DIRECTORY`：若`path`引用的不是目录，则出错
+  - `O_DIRECTORY`：若`path`引用的不是目录，则出错
   - `O_NOCTTY`：若`path`引用的是终端设备，则不将该设备分配作为此进程的控制终端
   - `O_NOFOLLOW`：若`path`引用的是一个符号链接，则出错
   - `O_NONBLOCK`：如果`path`引用的是一个`FIFO`、一个块特殊文件或者一个字符特殊文件，则文件本次打开操作和后续的 I/O 操作设为非阻塞模式。
@@ -47,7 +47,21 @@
 
 ### 4、文件定位时， `whence` 的选项有哪些？
 
-    SEEK_SET、SEEK_CUR、SEEK_END 三个常量之一 
+```
+off_t lseek(int fd, off_t offset,int whence);
+
+```
+
+SEEK_SET、SEEK_CUR、SEEK_END 三个常量之一 
+    
+参数 offset 的含义取决于参数 whence：
+
+1. 如果 whence 是 SEEK_SET，文件偏移量将被设置为 offset。
+2. 如果 whence 是 SEEK_CUR，文件偏移量将被设置为 cfo 加上 offset，
+   offset 可以为正也可以为负。
+3. 如果 whence 是 SEEK_END，文件偏移量将被设置为文件长度加上 offset，
+   offset 可以为正也可以为负。
+         
 ### 5、lseek 的注意事项：
 
    - 打开一个文件时，默认的偏移量是多少？
