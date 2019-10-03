@@ -10,14 +10,14 @@
 
 这个阶段很简单，现在仅仅只有 m0 这一个物理线程，也仅仅只有 g0 这一个负责上下文转换的协程。
 
-- 程序第一步，开始调用 `runtime·newproc` 创建第一个真正的 `main Goroutine`：[main Goroutine 的起始](#toc_4)
-- 第二步，`runtime·newproc` 的实际工作者 `newproc1` 利用 `malg` 函数新建一个 G 结构，并利用传来的参数初始化了 G 的上下文信息： [Goroutine 的创建 Null => _Gidle](#toc_5)、[Goroutine 转为可运行 _Gidle => _Grunnable](toc_9)
-- 第三步，`runtime·mstart` 物理线程进行初始化，最重要的就是 save 函数保存 g0 的 SP 地址：[m0 初始化阶段 idle](#toc_22)
-- 第四步，`runtime·mstart` 调用 `schedule` 开始调度：[M 的调度 idle => spinning](#toc_25)
-- 第五步，因为是在初始化阶段，所以 `schedule` 调度一定能够找到第二步放入队列的 G：[M 获取 G 成功开始执行 spinning => running](#toc_31)
-- 第六步，那就开始进行 G 的状态转移：[G 的运行 _Grunnable => _Grunning](#toc_12)
-- 第七步，现在真正的 main Goroutine 开始执行 m0 的入口函数 `runtime·main`: [m0 主线程的执行 running](#toc_36)
-- 第八步，`runtime·main` 函数中最为关键的就是后台监控程序 `sysmon`, 这个时候 Golang 会 clone 一个独立物理线程脱离 PMG 来执行：[sysmon 后台线程的执行 running => syscall](#toc_40)
+- 程序第一步，开始调用 `runtime·newproc` 创建第一个真正的 `main Goroutine`：[main Goroutine 的起始](#toc_8)
+- 第二步，`runtime·newproc` 的实际工作者 `newproc1` 利用 `malg` 函数新建一个 G 结构，并利用传来的参数初始化了 G 的上下文信息： [Goroutine 的创建 Null => _Gidle](#toc_9)、[Goroutine 转为可运行 _Gidle => _Grunnable](#toc_12)
+- 第三步，`runtime·mstart` 物理线程进行初始化，最重要的就是 save 函数保存 g0 的 SP 地址：[m0 初始化阶段 idle](#toc_45)
+- 第四步，`runtime·mstart` 调用 `schedule` 开始调度：[M 的调度 idle => spinning](#toc_48)
+- 第五步，因为是在初始化阶段，所以 `schedule` 调度一定能够找到第二步放入队列的 G：[M 获取 G 成功开始执行 spinning => running](#toc_54)
+- 第六步，那就开始进行 G 的状态转移：[G 的运行 _Grunnable => _Grunning](#toc_16)
+- 第七步，现在真正的 main Goroutine 开始执行 m0 的入口函数 `runtime·main`: [m0 主线程的执行 running](#toc_64)
+- 第八步，`runtime·main` 函数中最为关键的就是后台监控程序 `sysmon`, 这个时候 Golang 会 clone 一个独立物理线程脱离 PMG 来执行：[sysmon 后台线程的执行 running => syscall](#toc_68)
 - 第九步，`runtime·main` 函数开始执行用户的代码 `main.main` 函数
 
 至此，`Golang` 的程序初始化已完毕，m0 正在执行者用户写的 `main` 函数，还有一个独立的线程在执行着后台的监控程序 `sysmon`，`main Goroutine` 正在处于 `_Grunning` 状态中。
@@ -28,33 +28,33 @@
 
 在 Golang 的程序里面，当然不可能只有一个 `main Goroutine` 在跑，那么当第一次新建一个非 `main Goroutine` 协程 G 的时候，runtime 是如何处理的呢？
 
-- 第一步，其实和初始化阶段相同，还是调用 `runtime·newproc`，创建一个新的 G 结构：[Goroutine 的创建 Null => _Gidle](#toc_5)、[Goroutine 转为可运行 _Gidle => _Grunnable](toc_9)
-- 第二步，这一步就和初始化阶段不同了，`newproc1` 函数调用 `wakeup` 函数使用 `newm` 创建一个新的物理线程来运行这个 G：[M 新建与唤醒 null/sleeping => spinninig](#toc_35)，这个时候 `main Goroutine` 返回继续执行 `main` 函数代码，而这个线程 clone 建立之后，第一个运行的函数仍然是初始化函数 mstart: [mstart](#toc_24)
-- 第三步，与初始化阶段相同，`mstart` 调用 `schedule` 开始调度：[M 的调度 idle => spinning](#toc_25)
-- 第四步，与初始化阶段相同，`schedule` 调度一定能够找到放入队列的 G：[M 获取 G 成功开始执行 spinning => running](#toc_31)
-- 第五步，与初始化阶段相同，开始在新的物理线程 M 中进行 G 的状态转移，开始执行用户的函数代码：[G 的运行 _Grunnable => _Grunning](#toc_12)
-- 第六步，这里和初始化阶段不同。由于 m0 执行的是用户的 main 函数，因此它退出的时候就是 Go 程序结束的时刻。但是普通 m 物理线程中执行的协程代码 G 只是程序的一部分功能，它终将会结束。这时候，会调用 `runtime·goexit` 函数进行状态转移：[G 的退出 _Grunning => _Gidle](#toc_15)
-- 第七步，M 物理线程的一个调度循环已经结束：[协程调度循环 cycle](toc_40)
-- 第八步，按照调度循环，物理线程 M 接下来会重新回到调度函数 `schedule`：[M 的调度 idle => spinning](#toc_25)
-- 第九步，如果在第一步到第八步过程中，`main` 函数或者协程函数中，又创建了多个新的协程 G，那么 `schedule` 就可能会抢到一个可运行的 G：[M 获取 G 成功开始执行 spinning => running](#toc_31)
-- 第十步，如果不幸没能够抢到可运行的 G，那么就会陷入睡眠，等待着 wakeup：[M 获取 G 失败 spinning => sleeping](#toc_33)
+- 第一步，其实和初始化阶段相同，还是调用 `runtime·newproc`，创建一个新的 G 结构：[Goroutine 的创建 Null => _Gidle](#toc_9)、[Goroutine 转为可运行 _Gidle => _Grunnable](#toc_12)
+- 第二步，这一步就和初始化阶段不同了，`newproc1` 函数调用 `wakeup` 函数使用 `newm` 创建一个新的物理线程来运行这个 G：[M 新建与唤醒 null/sleeping => spinninig](#toc_60)，这个时候 `main Goroutine` 返回继续执行 `main` 函数代码，而这个线程 clone 建立之后，第一个运行的函数仍然是初始化函数 mstart: [mstart](#toc_46)
+- 第三步，与初始化阶段相同，`mstart` 调用 `schedule` 开始调度：[M 的调度 idle => spinning](#toc_48)
+- 第四步，与初始化阶段相同，`schedule` 调度一定能够找到放入队列的 G：[M 获取 G 成功开始执行 spinning => running](#toc_54)
+- 第五步，与初始化阶段相同，开始在新的物理线程 M 中进行 G 的状态转移，开始执行用户的函数代码：[G 的运行 _Grunnable => _Grunning](#toc_16)
+- 第六步，这里和初始化阶段不同。由于 m0 执行的是用户的 main 函数，因此它退出的时候就是 Go 程序结束的时刻。但是普通 m 物理线程中执行的协程代码 G 只是程序的一部分功能，它终将会结束。这时候，会调用 `runtime·goexit` 函数进行状态转移：[G 的退出 _Grunning => _Gidle](#toc_19)
+- 第七步，M 物理线程的一个调度循环已经结束：[协程调度循环 cycle](#toc_67)
+- 第八步，按照调度循环，物理线程 M 接下来会重新回到调度函数 `schedule`：[M 的调度 idle => spinning](#toc_48)
+- 第九步，如果在第一步到第八步过程中，`main` 函数或者协程函数中，又创建了多个新的协程 G，那么 `schedule` 就可能会抢到一个可运行的 G：[M 获取 G 成功开始执行 spinning => running](#toc_54)
+- 第十步，如果不幸没能够抢到可运行的 G，那么就会陷入睡眠，等待着 wakeup：[M 获取 G 失败 spinning => sleeping](#toc_56)
 
 至此，第一个非 `main Goroutine` 的协程生命周期和 M 状态转移已经结束。我们下面再谈谈对于正在运行中的 Golang 程序，新建一个协程会是什么流程？
 
 - 第一步，和上面步骤一相同。
-- 第二步，还是会调用 wakeup 函数：[M 新建与唤醒 null/sleeping => spinninig](#toc_35)。但是这里调用的结果已经不同。之前因为在初始阶段，因此 G 总是可以很快的被运行。但是随着时间的持续，创建的 G 越来愈多，这时候 wakeup 函数就会判断当前并发度 P 是否已经跑满，如果已经没有空闲的 P，那么就不会尝试唤醒或者新建 M。
-- 如果运气比较好，这时候恰好有空闲的 P，那么就尝试从空闲列表中取出一个已经陷入睡眠的 M，该 M 的来源是 [M 获取 G 失败 spinning => sleeping](#toc_33) 。如果空闲列表中没有 M，那么仍然使用 newm 创建一个新的物理线程 M。
+- 第二步，还是会调用 wakeup 函数：[M 新建与唤醒 null/sleeping => spinninig](#toc_60)。但是这里调用的结果已经不同。之前因为在初始阶段，因此 G 总是可以很快的被运行。但是随着时间的持续，创建的 G 越来愈多，这时候 wakeup 函数就会判断当前并发度 P 是否已经跑满，如果已经没有空闲的 P，那么就不会尝试唤醒或者新建 M。
+- 如果运气比较好，这时候恰好有空闲的 P，那么就尝试从空闲列表中取出一个已经陷入睡眠的 M，该 M 的来源是 [M 获取 G 失败 spinning => sleeping](#toc_56) 。如果空闲列表中没有 M，那么仍然使用 newm 创建一个新的物理线程 M。
 - 接下来的步骤相同。
 
 ### Goroutine 被动阻塞与唤醒、主动调度
 
 Golang 的协程之所以可以并发十万百万，最关键的就是当遇到 network 或者 channel 的时候，runtime 会自动阻塞 Goroutine，调度其他的 G 来占据当前的物理线程 M。
 
-Goroutine 的阻塞是通过 `gopark` 调用 `mcall`、`schedule` 来实现的：[协程 G 被动阻塞 _Grunning => _Gwaiting](#toc_18)
+Goroutine 的阻塞是通过 `gopark` 调用 `mcall`、`schedule` 来实现的：[协程 G 被动阻塞 _Grunning => _Gwaiting](#toc_24)
 
-当对应的 channel 数据可发送，或者有数据送达；或者当 network 数据发送完毕或者有数据可送达后，runtime 自动将 G 通过 `goready` 恢复 G 的可运行状态：[协程 G 阻塞唤醒 _Gwaiting => _Grunnable](#toc_19)
+当对应的 channel 数据可发送，或者有数据送达；或者当 network 数据发送完毕或者有数据可送达被 sysmon 监控到之后，runtime 自动将 G 恢复 G 的可运行状态：[协程 G 阻塞唤醒 _Gwaiting => _Grunnable](#toc_29)
 
-有时候，用户可以直接进行主动调度，让出自己的资源给其他的 G：[G 的主动调度 _Grunning => _Grunnable](#toc_20)
+有时候，用户可以直接进行主动调度，让出自己的资源给其他的 G：[G 的主动调度 _Grunning => _Grunnable](#toc_33)
 
 ### Goroutine 使用系统调用被阻塞
 
@@ -64,15 +64,15 @@ Goroutine 使用系统调用与被动阻塞是完全不同的，被动阻塞是�
 
 此时，很有可能就出现了一个空闲的 CPU，如果什么都不做，内核可能会调度一些不太重要的任务，造成我们 Golang 的应用程序并发度不足，这个时候 runtime 就会创建了一个新的物理线程或者唤醒一个已经陷入沉睡的线程，试图让内核调度这个物理线程到这个空闲的 CPU 上，来执行 runnable 的 G 任务。
 
-我们之前所说的，由 `runtime.main` 函数启动的，脱离 PMG 体系的物理线程 `sysmon` 开始起作用，它会监控 Golang 代码所有的系统调用，发现超时之后，会自动执行 P 与 M1 的剥离，设置 G 的状态为 `_Gsyscall` 并尝试新建或者唤醒其他 M2：[sysmon 后台线程的执行 running => syscall](#toc_43)
+我们之前所说的，由 `runtime.main` 函数启动的，脱离 PMG 体系的物理线程 `sysmon` 开始起作用，它会监控 Golang 代码所有的系统调用，发现超时之后，会自动执行 P 与 M1 的剥离，设置 G 的状态为 `_Gsyscall` 并尝试新建或者唤醒其他 M2：[sysmon 后台线程的执行 running => syscall](#toc_68)
 
-当系统调用结束之后，M1 被操作系统内核重新调度回来执行，但是此时它已经被 runtime 剥夺了 P，这个时候它只能睡眠，G 被恢复为 `_Grunnable` 状态，剥离 G 与 M 的关系，并将 G 扔到全局队列中去。这个 M1 等待着其他线程的唤醒。[系统调用返回 syscall => running/sleeping](#toc_46)
+当系统调用结束之后，M1 被操作系统内核重新调度回来执行，但是此时它已经被 runtime 剥夺了 P，这个时候它只能睡眠，G 被恢复为 `_Grunnable` 状态，剥离 G 与 M 的关系，并将 G 扔到全局队列中去。这个 M1 等待着其他线程的唤醒。[系统调用返回 syscall => running/sleeping](#toc_72)
 
 ### Goroutine 运行时间过长被抢占
 
-`sysmon` 函数不仅监控着系统调用，同时也在监控着所有的正在运行的 Goroutine，它会每隔一段时间就遍历所有的 P，查看当前在 P 上运行的 G 已运行的时间：[sysmon 后台线程的执行 running => syscall/_Grunnable]()
+`sysmon` 函数不仅监控着系统调用，同时也在监控着所有的正在运行的 Goroutine，它会每隔一段时间就遍历所有的 P，查看当前在 P 上运行的 G 已运行的时间：[sysmon 后台线程的执行 running => syscall/_Grunnable](#toc_68)
 
-如果认为当前的 G 运行已经超时，runtime 会尝试设置抢占标志，在 G 调用函数的时候，会自动检测抢占标志，让出自己的控制权。[G 运行时间长被抢占 _Grunning => _Grunnable](#toc_23)
+如果认为当前的 G 运行已经超时，runtime 会尝试设置抢占标志，在 G 调用函数的时候，会自动检测抢占标志，让出自己的控制权。[G 运行时间长被抢占 _Grunning => _Grunnable](#toc_36)
 
 这个功能也被用于 GC 过程中的 STW，G 让出自己的控制权之后，实际接下来执行的还是 `schedule` 调度函数，当调度函数发现 `gcwaiting` 为 true 的时候，会自动让当前的线程沉入睡眠。
 
@@ -560,9 +560,13 @@ func execute(gp *g, inheritTime bool) {
 
 ```
 
+#### gogo
+
 gogo 的汇编代码我们在前面已经详细说过了，就是从 g0 切换到 g 栈空间，并执行 g 的用户代码。
 
 ### G 的退出 `_Grunning => _Gidle`
+
+#### runtime·goexit
 
 对于主进程 m0 来说，是永远不会走到这一步的，因为 m0 只执行用户的 main.main，用户的代码全部完成后，m0 即可直接退出，整个 Go 程序也就结束了。 
 
@@ -581,6 +585,8 @@ func goexit1() {
 ```
 
 mcall 函数专门用于切换到 m->g0 的栈上，然后调用 fn (g)函数。goexit0 用于重置 G，然后给 P 重复利用。从goexit调用的mcall的保存状态其实是多余的, 因为G已经结束了，其实并不需要保存 G 的上下文状态。
+
+#### mcall(goexit0)
 
 goexit0函数调用时已经回到了g0的栈空间, 处理如下:
 
@@ -628,6 +634,9 @@ func goexit0(gp *g) {
 
 在这个 Goroutine 里面没有新建新的 G，也没有执行网络调用等等非阻塞，也没有执行读取文件之类的系统调用。接下来我们就要重点详细的了解遇到这些情况 golang 是如何处理的。
 
+#### schedule 
+
+可以执行 M 的调度函数了。
 
 ### `_Grunning` 过程中新建协程 G
 
@@ -680,6 +689,8 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 
 chanrecv1直接调用chanrecv函数实现读取操作，chanrecv首先会判断channel是否有数据可读，如果有数据则直接读取并返回，但如果没有数据，则需要把当前goroutine挂入channel的读取队列之中并调用goparkunlock函数阻塞该goroutine.
 
+#### gopark
+
 ```
 func goparkunlock(lock *mutex, reason waitReason, traceEv byte, traceskip int) {
     gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceEv, traceskip)
@@ -693,6 +704,8 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason  
 ```
 
 goparkunlock函数直接调用gopark函数，gopark则调用mcall从当前main goroutine切换到g0去执行park_m函数
+
+#### mcall(park_m) 函数
 
 ```
 func park_m(gp *g) {
@@ -712,6 +725,23 @@ park_m首先把当前goroutine的状态设置为_Gwaiting（因为它正在等�
 
 由此看来，park_m 的功能及其简单，仅仅把 G 设置为 _Gwaiting 即可。这个 G 会事先存放到 channel 的 sodoge 结构体中，等待着唤醒。
 
+#### dropg
+
+这个函数专门用于将 M 与 G 的关系剥离：
+
+```
+func dropg() {
+	_g_ := getg()
+
+	setMNoWB(&_g_.m.curg.m, nil)
+	setGNoWB(&_g_.m.curg, nil)
+}
+
+```
+
+#### schedule
+
+仍然去执行 M 的调度函数。
 
 ### 协程 G 阻塞唤醒 `_Gwaiting =>  _Grunnable`
 
@@ -743,6 +773,8 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 ```
 
 channel发送和读取的流程类似，如果能够立即发送则立即发送并返回，如果不能立即发送则需要阻塞，在我们这个场景中，因为main goroutine此时此刻正挂在channel的读取队列上等待数据，所以这里直接调用send函数发送给main goroutine，send函数则调用goready函数切换到g0栈并调用ready函数来唤醒sg对应的goroutine，即正在等待读channel的main goroutine。
+
+#### systemstack(ready)
 
 ```
 func goready(gp *g, traceskip int) {
@@ -777,7 +809,39 @@ ready函数首先把需要唤醒的goroutine的状态设置为_Grunnable，然�
 
 如果条件适当，还可以唤醒或者新建 M。
 
+#### injectglist
+
+除此之外，如果 `sysmon` 物理线程后台监控通过 `netpoll` 函数发现网络数据已经准备好之后，还会通过 `injectglist` 批量设置可运行状态：
+
+```
+func injectglist(glist *gList) {
+	if glist.empty() {
+		return
+	}
+
+	lock(&sched.lock)
+	var n int
+	for n = 0; !glist.empty(); n++ {
+		gp := glist.pop()
+		casgstatus(gp, _Gwaiting, _Grunnable)
+		globrunqput(gp)
+	}
+	unlock(&sched.lock)
+	for ; n != 0 && sched.npidle != 0; n-- {
+		startm(nil, false)
+	}
+	*glist = gList{}
+}
+
+```
+
+#### wakeup 唤醒 M
+
+执行 M 的唤醒工作。
+
 ### G 的主动调度 `_Grunning => _Grunnable`
+
+#### Gosched
 
 主动调度完全是用户代码自己控制的，首先从主动调度的入口函数Gosched()开始分析。
 
@@ -789,7 +853,11 @@ func Gosched() {
     mcall(gosched_m)
     //再次被调度起来则从这里开始继续运行
 }
+```
 
+#### mcall(gosched_m) => dropg/schedule
+
+```
 func gosched_m(gp *g) {
     goschedImpl(gp)  //我们这个场景：gp = g2
 }
@@ -807,6 +875,8 @@ func goschedImpl(gp *g) {
 ```
 
 ### G 运行时间长被抢占 `_Grunning => _Grunnable`
+
+#### preemptone
 
 在 sysmon 后台线程的监控下，或者 GC 的 STW 影响下，G 会被 runtime 进行被动抢占。
 
@@ -881,6 +951,8 @@ func main() {
 
 ```
 
+#### runtime.morestack_noctxt
+
 在main函数的尾部我们看到了对runtime.morestack_noctxt函数的调用，往前我们可以看到，对runtime.morestack_noctxt的调用是通过main函数的第三条jbe指令跳转过来的。
 
 ```
@@ -920,22 +992,19 @@ type stack struct {
 
 ![](img/preem.jpg)
 
+#### morestack——类似 mcall
+
 morestack_noctxt函数使用JMP指令直接跳转到morestack继续执行，注意这里没有使用CALL指令调用morestack函数，所以rsp栈顶寄存器并没有发生发生变化，与上图一样还是指向存放返回地址的内存处。
 
-morestack函数执行的流程类似于前面我们分析过的mcall函数，首先保存调用morestack函数的goroutine（我们这个场景是main goroutine）的调度信息到对应的g结构的sched成员之中，然后切换到当前工作线程的g0栈继续执行newstack函数。morestack代码如下，跟mcall一样都是使用go汇编语言编写的，这些代码跟mcall和gogo的代码非常类似，所以这里就不再对其进行详细分析了，读者可以自行参考下面的注释理解morestack函数的实现机制。
+morestack函数执行的流程类似于前面我们分析过的mcall函数，都是一去不复返的汇编调用。
+
+首先保存调用morestack函数的goroutine（我们这个场景是main goroutine）的调度信息到对应的g结构的sched成员之中，然后切换到当前工作线程的g0栈继续执行newstack函数。morestack代码如下，跟mcall一样都是使用go汇编语言编写的，这些代码跟mcall和gogo的代码非常类似，所以这里就不再对其进行详细分析了，读者可以自行参考下面的注释理解 morestack 函数的实现机制。
 
 ```
 TEXT runtime·morestack_noctxt(SB),NOSPLIT,$0
     MOVL  $0, DX
     JMP  runtime·morestack(SB)
 
-
-// Called during function prolog when more stack is needed.
-//
-// The traceback routines see morestack on a g0 as being
-// the top of a stack (for example, morestack calling newstack
-// calling the scheduler calling newm calling gc), so we must
-// record an argument size. For that purpose, it has no arguments.
 TEXT runtime·morestack(SB),NOSPLIT,$0-0
     ......
     get_tls(CX)
@@ -976,6 +1045,8 @@ TEXT runtime·morestack(SB),NOSPLIT,$0-0
 0x0000000000486ac2 <+66>: jmp   0x486a80 <main.main>
 
 ```
+
+#### newstack
 
 接下来我们继续看newstack函数，该函数主要有两个职责，一个是扩栈，另一个是响应sysmon提出的抢占请求.
 
@@ -1022,6 +1093,13 @@ func newstack() {
         gopreempt_m(gp) // never return
     }
     ......
+    
+    casgstatus(gp, _Grunning, _Gcopystack)
+
+	copystack(gp, newsize, true)
+
+	casgstatus(gp, _Gcopystack, _Grunning)
+	gogo(&gp.sched)
 }
 
 ```
@@ -1035,8 +1113,20 @@ func gopreempt_m(gp *g) {
 
 ```
 
+#### 抢占——goschedImpl
+
 gopreempt_m通过调用goschedImpl函数完成实际的调度切换工作，我们在前面主动调度一节已经详细分析过goschedImpl函数，该函数首先把gp的状态从_Grunning设置成_Grunnable，并通过dropg函数解除当前工作线程m和gp之间的关系，然后把gp放入全局队列等待被调度器调度，最后调用schedule()函数进入新一轮调度。
 
+#### 无需抢占——gogo
+
+如果不需要抢占，那么利用 gogo 函数回到之前的函数，之前的函数就是执行callq morestack_noctxt 后面的 
+
+```
+0x0000000000486ac2 <+66>: jmp   0x486a80 <main.main>
+
+```
+
+函数完毕。
 
 ## M 的状态转移
 
@@ -1630,9 +1720,13 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 
 ### M 获取 G 成功开始执行 `spinning => running`
 
+#### execute
+
 `execute(gp, inheritTime)` 就会执行 G 的代码。
 
 ### M 获取 G 失败 `spinning => sleeping`
+
+#### stopm
 
 如果工作线程经过多次努力一直找不到需要运行的goroutine则调用stopm进入睡眠状态，等待被其它工作线程唤醒。
 
@@ -1656,7 +1750,10 @@ func stopm() {
 	acquirep(_g_.m.nextp.ptr())
 	_g_.m.nextp = 0
 }
+```
+#### notesleep 睡眠
 
+```
 func notesleep(n *note) {
     gp := getg()
     if gp != gp.m.g0 {
@@ -1707,6 +1804,8 @@ func futexsleep(addr *uint32, val uint32, ns int64) {
 ```
 
 ### M 新建与唤醒 `null/sleeping  => spinninig`
+
+#### wakeup 与 startm
 
 当新建 G 之后，或者 G 重新启动之后，会调用 wakep 函数尝试唤醒睡眠的 M：
 
@@ -1759,7 +1858,11 @@ func startm(_p_ *p, spinning bool) {
 	mp.nextp.set(_p_)
 	notewakeup(&mp.park)
 }
+```
 
+#### notewakeup 唤醒
+
+```
 func notewakeup(n *note) {
     old := atomic.Xchg(key32(&n.key), 1)
     
@@ -2238,7 +2341,9 @@ func retake(now int64) uint32 {
 
 ```
 
-关于 G 运行过长时间抢占，详细可以查看 G 的状态转移章节。
+#### preemptone
+
+发现运行过长时间的 G，那么抢占它。
 
 #### handoffp 剥离 P 与 M
 
@@ -2453,6 +2558,8 @@ func exitsyscall() {
 
 因为在进入系统调用之前，工作线程调用entersyscall解除了m和p之间的绑定，现在已经从系统调用返回需要重新绑定一个p才能继续运行go代码，所以exitsyscall函数首先就调用exitsyscallfast去尝试绑定一个空闲的p，如果绑定成功则结束exitsyscall函数按函数调用链原路返回去执行其它用户代码，否则则调用mcall函数切换到g0栈执行exitsyscall0函数。下面先来看exitsyscallfast如何尝试绑定一个p，然后再去分析exitsyscall0函数。
 
+#### exitsyscallfast 尝试绑定 P，成功立刻返回
+
 exitsyscallfast首先尝试绑定进入系统调用之前所使用的p，如果绑定失败就需要调用exitsyscallfast_pidle去获取空闲的p来绑定。
 
 ```
@@ -2523,6 +2630,8 @@ func exitsyscallfast_pidle() bool {
 }
 
 ```
+
+#### 绑定失败 mcall(exitsyscall0) => dropg/stopm
 
 回到exitsyscall函数，如果exitsyscallfast绑定p失败，则调用mcall执行exitsyscall0函数，mcall我们已经见到过多次，所以这里只分析exitsyscall0函数。
 
