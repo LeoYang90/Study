@@ -8,7 +8,8 @@ Go是一个支持goroutine这种多线程的语言，所以它的内存管理系
 
 分配器的数据结构包括:
 
-- FixAlloc: 固定大小(128kB)的对象的空闲链分配器,被分配器用于管理存储 MHeap: 分配堆,按页的粒度进行管理(4kB)
+- FixAlloc: 固定大小(128kB)的对象的空闲链分配器,被分配器用于管理存储 
+- MHeap: 分配堆,按页的粒度进行管理(4kB)
 - MSpan: 一些由MHeap管理的页
 - MCentral: 对于给定尺寸类别的共享的free list
 - MCache: 用于小对象的每M一个的cache
@@ -315,7 +316,7 @@ type mcache struct {
 
 mcache用Span Classes作为索引管理多个用于分配的mspan，它包含所有规格的mspan。它是_NumSizeClasses的2倍，也就是67*2=134，为什么有一个两倍的关系，前面我们提到过：为了加速之后内存回收的速度，数组里一半的mspan中分配的对象不包含指针，另一半则包含指针。对于无指针对象的mspan在进行垃圾回收的时候无需进一步扫描它是否引用了其他活跃的对象。
 
-tiny 是用于 tiny 对象的分配，tiny 指针指向当前 cache 中正在负责分配 tiny 对象的 mspan 首地址，tinyoffset 是当前在 mspan 中已占用的大小，local_tinyallocs 是已分配的 tiny 对象个数。
+tiny 是用于 tiny 对象的分配，tiny 指针指向当前 cache 中正在负责分配 tiny 对象的 object 首地址，tinyoffset 是当前在 mspan 中已占用的大小，local_tinyallocs 是已分配的 tiny 对象个数。
 
 ## 平台相关函数
 

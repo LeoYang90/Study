@@ -351,6 +351,14 @@ embstr的创建只需分配一次内存，而raw为两次，分别创建redisObj
 
 redis并未提供任何修改embstr的方式，即embstr是只读的形式。对embstr的修改实际上是先转换为raw再进行修改。
 
+embstr和raw都是由redisObject和sds组成的。不同的是：embstr的redisObject和sds是连续的，只需要使用 malloc 分配一次内存；而raw需要为redisObject和sds分别分配内存，即需要分配两次内存。
+
+所有相比较而言，embstr少分配一次内存，更方便。但embstr也有明显的缺点：如要增加长度，redisObject和sds都需要重新分配内存。
+
+![](img/embstr.png)
+
+![](img/embstr1.png)
+
 命令：
 
 - set

@@ -379,27 +379,32 @@ gc完成后, gcmarkBits会移动到allocBits然后重新分配一个全部为0�
 
 ### 混合写屏障
 
-混合写屏障会同时标记指针写入目标的"原指针"和“新指针".
+#### 屏障技术
 
-标记原指针的原因是, 其他运行中的线程有可能会同时把这个指针的值复制到寄存器或者栈上的本地变量,
+当回收器满足下面两种情况之一时，即可保证不会出现对象丢失问题。
 
-因为按照之前的写屏障规则，复制指针到寄存器或者栈上的本地变量不会经过写屏障, 所以有可能会导致指针不被标记, 试想下面的情况:
+弱三色不变式：所有被黑色对象引用的白色对象都处于灰色保护状态（直接或间接从灰色对象可达）。 
+
+强三色不变式：不存在黑色对象到白色对象的指针。强三色不变式很好理解，强制性的不允许黑色对象引用白色对象即可。而弱三色不变式中，黑色对象可以引用白色对象，但是这个白色对象仍然存在其他灰色对象对它的引用，或者可达它的链路上游存在灰色对象。
+
+三色抽象除了可以用于描述对象的状态的，还可用来描述赋值器的状态，如果一个赋值器已经被回收器扫描完成，则认为它是黑色的赋值器，如果尚未扫描过或者还需要重新扫描，则认为它是灰色的赋值器。
+
+在强三色不变式中，黑色赋值器只存在到黑色对象或灰色对象的指针，因为此时所有黑色对象到白色对象的引用都是被禁止的。 在弱三色不变式中，黑色赋值器允许存在到白色对象的指针，但这个白色对象是被保护的。上述这些可以通过屏障技术来保证。
+
+#### 插入屏障
+
+插入屏障拦截将白色指针插入黑色对象的操作，标记其对应对象为灰色状态，这样就不存在黑色对象引用白色对象的情况了，满足强三色不变式。伪代码如下：
 
 ```
-[go] b = obj
-[go] oldx = nil
-[gc] scan oldx...// gc 开始扫描 oldx
-[go] oldx = b.x // 复制b.x到本地变量, 不进过写屏障
-[go] b.x = ptr // 写屏障应该标记b.x的原值
-[gc] scan b...
+writePointer(slot, ptr):
+    shade(ptr)
+    *slot = ptr
 
 ```
 
-可以看到，刚刚开始扫描 oldx 的时候，oldx 还是个 nil，扫描过程中 b 将 obj.x 指针赋予了临时变量 oldx，然后 b.x 转换成了新值，之后 gc 开始扫描 b。
+伪代码中，ptr 是新的白色对象，而 slot 是堆上黑色对象的指针。
 
-如果不标记原值的话，最后扫描 b 对象的时候，b.x 已经变成了 ptr，而 b.x 的之前值 oldx 并不会扫描到，从而会被 gc 清除。
-
-标记新指针的原因是, 其他运行中的线程有可能会转移指针的位置, 试想下面的情况:
+试想下面的情况:
 
 ```
 [go] a = ptr
@@ -411,7 +416,79 @@ gc完成后, gcmarkBits会移动到allocBits然后重新分配一个全部为0�
 
 ```
 
-可以看到，在扫描开始的时候，ptr 还存储在 a 对象上，在扫描中 a 对象转移了 ptr 的指针，然后自己变成了 nil，这时候才开始扫描 a 对象。如果写屏障不标记新值, 那么 ptr 就不会被扫描到.
+开始时，obj 是堆上的白色对象，b 同样也是堆上的白色对象，a 是栈上的白色对象，ptr 也是白色对象。
+
+当 gc 开始之后，b 被标记为黑色，gc 阶段性结束。
+
+gc 阶段性结束之后，ptr 这个白色对象从栈上转移到堆上的黑色对象指针上，这个时候 Dijkstra 插入屏障就需要发挥作用，将 ptr 置灰。
+
+否则，栈上的对象 a 将会被重置为 nil，gc 再进行扫描的时候，ptr 就无法被标记而被删除。
+
+#### 删除屏障
+
+删除屏障也是拦截写操作的，但是是通过保护灰色对象到白色对象的路径不会断来实现的。如上图例中，在删除指针e时将对象C标记为灰色，这样C下游的所有白色对象，即使会被黑色对象引用，最终也还是会被扫描标记的，满足了弱三色不变式。这种方式的回收精度低，一个对象即使被删除了最后一个指向它的指针也依旧可以活过这一轮，在下一轮GC中被清理掉。Yuasa屏障伪代码如下：
+
+```
+writePointer(slot, ptr):
+    if (isGery(slot) || isWhite(slot))
+        shade(*slot)
+    *slot = ptr
+
+```
+
+伪代码中，slot 是堆上的灰色对象的指针，*slot 是堆上灰色对象的指针所引用的白色对象。因此白色对象在被 ptr 替换之前需要先被标记，否则一旦它被栈上的黑色对象的指针引用的话，它就不会被扫描。
+
+在这种实现方式中，回收器悲观的认为所有被删除的对象都可能会被栈上的黑色对象引用。
+
+试想下面的情况:
+
+```
+[go] b = obj
+[go] oldx = nil
+[gc] scan oldx...// gc 开始扫描 oldx
+[go] oldx = b.x // 复制b.x到本地变量, 不进过写屏障
+[go] b.x = ptr // 写屏障应该标记b.x的原值
+[gc] scan b...
+
+```
+
+刚刚开始的时候，obj 是堆上的白色对象，ptr 是堆上的白色对象，b 也是堆上的白色对象，oldx 是栈上的白色对象。
+
+刚刚开始 gc 的时候，oldx 这个栈上的白色对象被标记为黑色，gc 阶段性结束。
+
+然后堆上的白色对象 b 指针将其引用的白色对象赋值给栈上的黑色对象 oldx。由于栈上的黑色对象赋值不会经过写屏障，会导致 obj.x 这个引用的白色对象无法被扫描。
+
+因此在下一步，b.x 这个堆上白色对象的指针重新赋值的时候，删除屏障需要将 b.x 之前引用的白色对象置灰。
+
+如果不标记原值的话，最后扫描 b 对象的时候，b.x 已经变成了 ptr，而 b.x 的之前值 oldx 并不会扫描到，从而会被 gc 清除。
+
+#### 混合写屏障
+
+混合写屏障会同时标记指针写入目标的"原指针"和“新指针".
+
+标记原指针的原因是, 其他运行中的线程有可能会同时把这个指针的值复制到寄存器或者栈上的本地变量。
+
+在Golang中，对栈上指针的写入添加插入写屏障的成本很高，所以Go选择仅对堆上的指针插入增加写屏障，这样就会出现在扫描结束后，栈上仍存在引用白色对象的情况，这时的栈是灰色的，不满足三色不变式，所以需要对栈进行重新扫描使其变黑，完成剩余对象的标记，这个过程需要STW。这期间会将所有goroutine挂起，当有大量应用程序时，时间可能会达到10～100ms。
+
+按照之前的写屏障规则，复制指针到寄存器或者栈上的本地变量不会经过写屏障, 所以有可能会导致指针不被标记。
+
+简单的说，写屏障仅仅针对堆上的对象，假如一个白色对象被分配到了一个堆上的黑色对象的指针上之后，该白色对象就会被置为灰色，这就是典型的写屏障。
+
+但是如果一个白色对象被分配到一个栈上的黑色对象的指针上后，由于对栈上指针的写入添加写屏障的成本很高，因此不会经过写屏障，而是采用对栈进行重新扫描使其变黑，完成剩余对象的标记，这个过程需要STW。
+
+混合写屏障解决了这种问题，假如有一个白色对象，它被堆上的灰色对象的指针引用，这时候需要转移到栈上的黑色对象的指针上。那么在灰色对象的指针解除白色对象引用的过程中，混合写屏障开始发挥作用，它记录了这个删除过程中的白色对象，并且将其置灰。伪代码如下：
+
+```
+writePointer(slot, ptr):
+    shade(*slot)
+    if current stack is grey:
+        shade(ptr)
+    *slot = ptr
+
+```
+
+这里使用了两个shade操作，shade(*slot)是删除写屏障的变形，例如，一个堆上的灰色对象B，引用白色对象C，在GC并发运行的过程中，如果栈已扫描置黑，而赋值器将指向C的唯一指针从B中删除，并让栈上其他对象引用它，这时，写屏障会在删除指向白色对象C的指针的时候就将C对象置灰，就可以保护下来了，且它下游的所有对象都处于被保护状态。 如果对象B在栈上，引用堆上的白色对象C，将其引用关系删除，且新增一个黑色对象到对象C的引用，那么就需要通过shade(ptr)来保护了，在指针插入黑色对象时会触发对对象C的置灰操作。如果栈已经被扫描过了，那么栈上引用的对象都是灰色或受灰色保护的白色对象了，所以就没有必要再进行这步操作。Golang中的混合写屏障满足的是变形的弱三色不变式，同样允许黑色对象引用白色对象，白色对象处于灰色保护状态，但是只由堆上的灰色对象保护。由于结合了Yuasa的删除写屏障和Dijkstra的插入写屏障的优点，只需要在开始时并发扫描各个goroutine的栈，使其变黑并一直保持，这个过程不需要STW，而标记结束后，因为栈在扫描后始终是黑色的，也无需再进行re-scan操作了，减少了STW的时间。
+
 
 总的来说，b.x 被赋值的时候，既要保留原值，还要保留新值。
 
@@ -535,6 +612,19 @@ func gcAssistAlloc1(gp *g, scanWork int64) {
 }
 ```
 
+普通的 goroutine 是有自己的计数 gcAssistBytes, 分配时会减去相应的size, 这个小于0时, 会进行检查是否需要辅助gc. 至少stole 64KB的额度, 平摊损耗. 
+
+如果bgScanCredit满足, 那就直接从bgScanCredit减去(有一个assistBytesPerWork比例转换)
+
+如果bgScanCredit不够, 那就尝试进行辅助 gc mark。
+
+如果由于 g 在辅助 gc 的时候被抢占，那就退出辅助 gc，然后被调度。
+
+如果无法扫描到足够多的对象，那就把这个g添加到work.assistQueue等待.
+
+在bgmarker mark grain的时候, 积累了一定量, 会flush到credit去(gcFlushBgCredit), 这时候会检查assistQueue中是否有g, 进行唤醒(ready).
+ gc结束时也会把assistQueue中所有的g唤醒()gcWakeAllAssists)
+
 辅助标记是每次分配对象时都会检查，触发时G会帮助扫描"工作量"个对象, 工作量的计算公式是:
 
 ```
@@ -640,6 +730,7 @@ if sweepDistancePages <= 0 {
 
 ### gcStart
 
+
 ```
 func gcStart(trigger gcTrigger) {
     ...
@@ -683,6 +774,8 @@ func gcStart(trigger gcTrigger) {
 	
 	...
 	
+	setGCPhase(_GCmark)
+	
    // 计算扫描根对象的任务数量
    gcMarkRootPrepare()
    
@@ -704,6 +797,23 @@ func gcStart(trigger gcTrigger) {
 }
 
 ```
+
+值得注意的是 `setGCPhase(_GCmark)` 开启了新一轮的 gc 循环，自此之后到 `_GCmarktermination` 阶段结束，任何新申请内存的操作都会自动将对象置黑：
+
+```
+func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+    ...
+    
+    if gcphase != _GCoff {
+		gcmarknewobject(uintptr(x), size, scanSize)
+	}
+	
+	...
+}
+
+```
+
+再加上混合写屏障的作用，因此，goroutine 的栈扫描只需要在 mark 阶段执行一次即可。
 
 ### gcBgMarkStartWorkers
 
@@ -1479,7 +1589,86 @@ func greyobject(obj, base, off uintptr, span *mspan, gcw *gcWork, objIndex uintp
 
 在所有后台标记任务都把标记队列消费完毕时, 会执行gcMarkDone函数准备进入完成标记阶段(mark termination).
 
-在并行GC中gcMarkDone会被执行两次, 第一次会禁止本地标记队列然后重新开始后台标记任务, 第二次会进入完成标记阶段(mark termination)。
+- 某个时刻这个assist或bg worker执行完了, 发现没有assist在运行, 没有bg worker在运行, 且当前P本地没有mark work, 全局的 work 中 full 队列 mark 工作也完成了，这个时候可能所有的标记结束了, 就进入gcMarkDone检查, 否则退出gcMarkDone检查.
+
+
+```
+func gcAssistAlloc(gp *g) {
+    ...
+    
+    // Perform assist work
+	systemstack(func() {
+		gcAssistAlloc1(gp, scanWork)
+		// The user stack may have moved, so this can't touch
+		// anything on it until it returns from systemstack.
+	})
+
+	completed := gp.param != nil
+	gp.param = nil
+	if completed {
+		gcMarkDone()
+	}
+    ...
+}
+
+func gcAssistAlloc1(gp *g, scanWork int64) {
+    ...
+    
+    if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
+		// This has reached a background completion point. Set
+		// gp.param to a non-nil value to indicate this. It
+		// doesn't matter what we set it to (it just has to be
+		// a valid pointer).
+		gp.param = unsafe.Pointer(gp)
+	}
+}
+
+func gcBgMarkWorker(_p_ *p) {
+    ...
+
+    if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
+			// Make this G preemptible and disassociate it
+			// as the worker for this P so
+			// findRunnableGCWorker doesn't try to
+			// schedule it.
+			_p_.gcBgMarkWorker.set(nil)
+			releasem(park.m.ptr())
+
+			gcMarkDone()
+
+			// Disable preemption and prepare to reattach
+			// to the P.
+			//
+			// We may be running on a different P at this
+			// point, so we can't reattach until this G is
+			// parked.
+			park.m.set(acquirem())
+			park.attach.set(_p_)
+		}
+}
+
+// gcMarkWorkAvailable reports whether executing a mark worker
+// on p is potentially useful. p may be nil, in which case it only
+// checks the global sources of work.
+func gcMarkWorkAvailable(p *p) bool {
+	if p != nil && !p.gcw.empty() {
+		return true
+	}
+	if !work.full.empty() {
+		return true // global work available
+	}
+	if work.markrootNext < work.markrootJobs {
+		return true // root scan work available
+	}
+	return false
+}
+
+```
+
+- 在并行GC中gcMarkDone会被执行两次, 第一次会禁止本地标记队列然后重新开始后台标记任务, 第二次会进入完成标记阶段(mark termination)。
+- 在第一阶段，进行 markDone 检查, forEachP 使得所有P抢占，并且执行安全点函数. 遍历所有的P, 告诉每个P运行到safePoint函数 wbBufFlush1 (flush write barrier, 并把本地的work flush到global, 如果有任何flush, 就设置该p flushed标记为true).由于在这一阶段并没有 stw，因此其他的 P 上可能不断的有对象刷到写屏障，也有可能不断的申请堆上的内存。因此这个阶段需要不断循环，直到所有的 P 的工作队列完成任务。
+- 所有P执行safePoint没有任何flushed, 就表示这个时候所有的标记完了. 可以进入termination, 完成gc了.
+
 
 ```
 func gcMarkDone() {
@@ -1517,6 +1706,35 @@ top:
 	// 停止所有运行中的G, 并禁止它们运行
 	systemstack(stopTheWorldWithSema)
 	
+	{
+		// For unknown reasons (see issue #27993), there is
+		// sometimes work left over when we enter mark
+		// termination. Detect this and resume concurrent
+		// mark. This is obviously unfortunate.
+		//
+		// Switch to the system stack to call wbBufFlush1,
+		// though in this case it doesn't matter because we're
+		// non-preemptible anyway.
+		restart := false
+		systemstack(func() {
+			for _, p := range allp {
+				wbBufFlush1(p)
+				if !p.gcw.empty() {
+					restart = true
+					break
+				}
+			}
+		})
+		if restart {
+			getg().m.preemptoff = ""
+			systemstack(func() {
+				now := startTheWorldWithSema(true)
+				work.pauseNS += now - work.pauseStart
+			})
+			goto top
+		}
+	}
+	
 	// 禁止辅助GC和后台标记任务的运行
 	atomic.Store(&gcBlackenEnabled, 0)
 
@@ -1542,6 +1760,7 @@ top:
 
 ### gcMarkTermination
 
+stw 之后，各个协程 goroutine 均被抢占，栈已经不会再增长，也不会再申请堆内存，这个时候需要做的事情很简单，那就是检查各个 P 已经不存在本地的 work 任务，然后关闭写屏障，顺便开启后台 sweep 清扫工作。
 
 ```
 func gcMarkTermination(nextTriggerRatio float64) {
@@ -1588,9 +1807,60 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	...
 }
 
+func gcMark(start_time int64) {
+    ...
+
+	// Clear out buffers and double-check that all gcWork caches
+	// are empty. This should be ensured by gcMarkDone before we
+	// enter mark termination.
+	//
+	// TODO: We could clear out buffers just before mark if this
+	// has a non-negligible impact on STW time.
+	for _, p := range allp {
+		// The write barrier may have buffered pointers since
+		// the gcMarkDone barrier. However, since the barrier
+		// ensured all reachable objects were marked, all of
+		// these must be pointers to black objects. Hence we
+		// can just discard the write barrier buffer.
+		if debug.gccheckmark > 0 || throwOnGCWork {
+			// For debugging, flush the buffer and make
+			// sure it really was all marked.
+			wbBufFlush1(p)
+		} else {
+			p.wbBuf.reset()
+		}
+
+		gcw := &p.gcw
+		if !gcw.empty() {
+			printlock()
+			print("runtime: P ", p.id, " flushedWork ", gcw.flushedWork)
+			if gcw.wbuf1 == nil {
+				print(" wbuf1=<nil>")
+			} else {
+				print(" wbuf1.n=", gcw.wbuf1.nobj)
+			}
+			if gcw.wbuf2 == nil {
+				print(" wbuf2=<nil>")
+			} else {
+				print(" wbuf2.n=", gcw.wbuf2.nobj)
+			}
+			print("\n")
+			throw("P has cached GC work at end of mark termination")
+		}
+		// There may still be cached empty buffers, which we
+		// need to flush since we're going to free them. Also,
+		// there may be non-zero stats because we allocated
+		// black after the gcMarkDone barrier.
+		gcw.dispose()
+	}
+
+}
+
 ```
 
 ## gcSweep
+
+增加 sweepgen 这个动作非常重要，增加 sweepgen 之后，再申请堆内存，其内存 sweepgen 不会被列入清扫的目标，而之前的 sweepgen 全部被列入待清扫目标，只有黑色对象才会免除被删除。
 
 ```
 func gcSweep(mode gcMode) {
