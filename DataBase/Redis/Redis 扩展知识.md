@@ -249,6 +249,8 @@ Leader 再次给 Follower 发送 AppendEntries 请求，收到请求后，Follow
 
 ![](img/raft25.png)
 
+可以看到，其实 leader 设置日志为 commit 的状态的时候，其他 follower 节点是不知道这个状态的，他们仅仅有这个 uncommit 的日志。这个时候，如果 leader 挂了，集群不会认为这个已经 commited，会触发选举。但是选举过程中，只有有这个 uncommit 日志的节点，才会有资格选举。选举成功后，会强制 commit 一个空的 log，如果成功，会带着这个 uncommit 的日志一起提交，https://www.zhihu.com/question/357207584/answer/906154153
+
 
 #### Network Partition 情况下进行复制日志
 
